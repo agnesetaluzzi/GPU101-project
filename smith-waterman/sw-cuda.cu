@@ -6,7 +6,7 @@
 #define S_LEN 512
 #define N 1000
 
-/* error handling for CUDA API functions */
+// error handling for CUDA API functions
 #define CHECK(call)                                                  \
     {                                                                \
         const cudaError_t err = call;                                \
@@ -18,7 +18,7 @@
         }                                                            \
     }
 
-/* error handling for kernel invocations */
+// error handling for kernel invocations
 #define CHECK_KERNELCALL()                                           \
     {                                                                \
         const cudaError_t err = cudaGetLastError();                  \
@@ -190,6 +190,20 @@ int main(int argc, char *argv[])
 
     printf("SW Time CPU: %.10lf\n", end_cpu - start_cpu);
     printf("SW Time GPU: %.10lf\n", end_gpu - start_gpu);
+
+    CHECK(cudaFree(d_query));
+    CHECK(cudaFree(d_reference));
+    CHECK(cudaFree(d_sc_mat));
+    CHECK(cudaFree(d_dir_mat));
+    CHECK(cudaFree(d_res));
+    CHECK(cudaFree(d_simple_rev_cigar));
+
+    free(query);
+    free(reference);
+    free(sc_mat);
+    free(dir_mat);
+    free(res);
+    free(simple_rev_cigar);
 
     return 0;
 }
