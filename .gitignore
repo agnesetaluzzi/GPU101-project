@@ -1,3 +1,4 @@
+.vscode
 *.mtx
 symgs/symgs-test 
 spmv/spmv-test 
