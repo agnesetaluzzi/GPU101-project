@@ -72,9 +72,9 @@ void backtrace(char *simple_rev_cigar, char **dir_mat, int i, int j, int max_cig
     }
 }
 
-__global__ void kernel_main(char *d_query, char *d_reference, int *d_res)
+__global__ void kernel_main(char *d_query, char *d_reference, int *d_res, char *d_simple_rev_cigar)
 {
-    int index = blockIdx.x * blockDim.x + threadIdx.x; // index of each element of the array
+    // int index = blockIdx.x * blockDim.x + threadIdx.x; // index of each element of the array
     __shared__ int d_sc_mat[S_LEN + 1][S_LEN + 1];
     __shared__ char d_dir_mat[S_LEN + 1][S_LEN + 1];
     int max = ins; // in sw all scores of the alignment are >= 0, so this will be for sure changed
@@ -88,7 +88,6 @@ __global__ void kernel_main(char *d_query, char *d_reference, int *d_res)
             d_dir_mat[i][j] = {0};
         }
     }
-    __syncthreads();
 
     for (int i = 1; i < S_LEN + 1; i++)
     {
@@ -123,9 +122,26 @@ __global__ void kernel_main(char *d_query, char *d_reference, int *d_res)
             }
         }
     }
-    __syncthreads();
 
     d_res[blockIdx.x] = d_sc_mat[maxi][maxj];
+
+    int i = maxi;
+    int j = maxj;
+    for (int n = 0; n < S_LEN * 2 && d_dir_mat[i][j] != 0; n++)
+    {
+        int dir = d_dir_mat[i][j];
+        if (dir == 1 || dir == 2)
+        {
+            i--;
+            j--;
+        }
+        else if (dir == 3)
+            i--;
+        else if (dir == 4)
+            j--;
+
+        d_simple_rev_cigar[blockIdx.x * 2 * S_LEN + n] = dir;
+    }
 }
 
 int main(int argc, char *argv[])
@@ -157,6 +173,7 @@ int main(int argc, char *argv[])
     char **simple_rev_cigar = (char **)malloc(N * sizeof(char *));
     for (int i = 0; i < N; i++)
         simple_rev_cigar[i] = (char *)malloc(S_LEN * 2 * sizeof(char));
+    char *simple_rev_cigar_gpu = (char *)malloc(N * S_LEN * 2 * sizeof(char));
 
     // randomly generate sequences
     for (int i = 0; i < N; i++)
@@ -245,7 +262,7 @@ int main(int argc, char *argv[])
     dim3 blocksPerGrid(N, 1, 1);
     dim3 threadsPerBlock(1, 1, 1);
 
-    kernel_main<<<blocksPerGrid, threadsPerBlock>>>(d_query, d_reference, d_res);
+    kernel_main<<<blocksPerGrid, threadsPerBlock>>>(d_query, d_reference, d_res, d_simple_rev_cigar);
     CHECK_KERNELCALL();
 
     CHECK(cudaDeviceSynchronize());
@@ -253,12 +270,22 @@ int main(int argc, char *argv[])
     double end_gpu = get_time();
 
     CHECK(cudaMemcpy(res_gpu, d_res, sizeof(int) * N, cudaMemcpyDeviceToHost));
+    CHECK(cudaMemcpy(simple_rev_cigar_gpu, d_simple_rev_cigar, sizeof(char) * N * S_LEN * 2, cudaMemcpyDeviceToHost));
 
     for (int n = 0; n < N; n++)
     {
         if (res[n] != res_gpu[n])
         {
             fprintf(stderr, "ERRORE, RISULTATO SBAGLIATO SU GPU\n");
+            break;
+        }
+        for (int s = 0; s < S_LEN * 2; s++)
+        {
+            if (simple_rev_cigar[n][s] != simple_rev_cigar_gpu[n * S_LEN * 2 + s])
+            {
+                fprintf(stderr, "ERRORE, RISULTATO SBAGLIATO SU GPU (BACKTRACE)\n");
+                break;
+            }
         }
     }
 
