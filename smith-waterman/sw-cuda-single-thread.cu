@@ -141,8 +141,8 @@ __global__ void sw_gpu(char *d_query, char *d_reference, int *d_res, char *d_sim
     {
         for (int j = 0; j < S_LEN + 1; j++)
         {
-            d_sc_mat[i][j] = {0};
-            d_dir_mat[i][j] = {0};
+            d_sc_mat[i][j] = 0;
+            d_dir_mat[i][j] = 0;
         }
     }
 

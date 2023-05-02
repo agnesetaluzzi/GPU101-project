@@ -36,6 +36,13 @@
         }                                                            \
     }
 
+typedef struct
+{
+    int val;
+    int i;
+    int j;
+} max_ij;
+
 double get_time() // function to get the time of day in seconds
 {
     struct timeval tv;
@@ -123,90 +130,121 @@ void sw(int **sc_mat, char **dir_mat, char **query, char **reference, int *res, 
     }
 }
 
-__global__ void collect_res(int *d_res)
+__global__ void sw_gpu(char *d_query, char *d_reference, int *d_res, char *d_simple_rev_cigar)
 {
-    int threadId = threadIdx.x;
-    int index = blockIdx.x * blockDim.x + threadId;
+    unsigned int threadId = threadIdx.x;
 
-    for (int i = blockDim.x / 2; i > 0; i >>= 1)
-    {
-        if (threadId < i)
-        {
-            d_res[index] = d_res[index] > d_res[index + i] ? d_res[index] : d_res[index + i];
-        }
-        __syncthreads();
-    }
-}
+    // I keep saved only the last 2 computed diagonals
+    __shared__ int d_sc_last_d[S_LEN + 1];
+    __shared__ int d_sc_2_to_last_d[S_LEN + 1];
+    __shared__ max_ij max[S_LEN];
 
-__global__ void sw_gpu(char *d_query, char *d_reference, int *d_sc_mat, char *d_dir_mat, int *d_res)
-{
-    int threadId = threadIdx.x;
-    int index = blockIdx.x * blockDim.x + threadId; // index of each element of the array
+    char d_dir_mat[S_LEN + 1][S_LEN + 1];
 
-    // __shared__ char d_dir_mat[S_LEN + 1][S_LEN + 1];
+    int blockShift = blockIdx.x * S_LEN;
 
-    int max = ins; // in sw all scores of the alignment are >= 0, so this will be for sure changed
-    int maxi, maxj;
-
-    // initialize the scoring matrix and direction matrix to 0
-    int blockShift = blockIdx.x * (S_LEN + 1) * (S_LEN + 1);
+    // initialize the scoring mat and the direction matrix to 0
+    d_sc_last_d[threadId] = 0;
+    d_sc_2_to_last_d[threadId] = 0;
+    max[threadId].val = ins;
     for (int j = 0; j < S_LEN + 1; j++)
     {
-        d_sc_mat[blockShift + threadId * (S_LEN + 1) + j] = {0};
-        d_dir_mat[blockShift + threadId * (S_LEN + 1) + j] = {0};
+        d_dir_mat[threadId][j] = 0;
         if (threadId == 0)
         {
-            d_sc_mat[blockShift + S_LEN * (S_LEN + 1) + j] = {0};
-            d_dir_mat[blockShift + S_LEN * (S_LEN + 1) + j] = {0};
+            d_dir_mat[S_LEN][j] = 0;
         }
+    }
+    if (threadId == 0)
+    {
+        d_sc_last_d[S_LEN] = 0;
+        d_sc_2_to_last_d[S_LEN] = 0;
+        // max = ins;
     }
     __syncthreads();
 
-    for (int d = 0; d < S_LEN * 2 + 1; d++)
-    {
-        // calculate the indexes
-        int i = threadId + 1;
-        int j = d - threadId + 1;
+    int i, j, maxi, maxj, comparison, tmp1, tmp2, comparisonRes, delRes, insRes, tmp = 0;
+    char dir;
 
-        // check if valid
-        if (i >= 1 && i <= S_LEN && j >= 1 && j <= S_LEN)
+    for (int d = 0; d < S_LEN * 2 - 1; d++)
+    {
+        i = threadId + 1;
+        j = d - threadId + 1;
+
+        // check if indexes are valid
+        if (!(i < 1 || i > S_LEN || j < 1 || j > S_LEN))
         {
 
             // compare the sequences characters
-            int comparison = (d_query[blockIdx.x * blockDim.x + i - 1] == d_reference[blockIdx.x * blockDim.x + j - 1]) ? match : mismatch;
+            comparison = (d_query[blockShift + i - 1] == d_reference[blockShift + j - 1]) ? match : mismatch;
 
             // compute the cell knowing the comparison result
-            int tmp1, tmp2;
-            tmp1 = (d_sc_mat[blockShift + (i - 1) * (S_LEN + 1) + j - 1] + comparison) > (d_sc_mat[blockShift + (i - 1) * (S_LEN + 1) + j] + del) ? (d_sc_mat[blockShift + (i - 1) * (S_LEN + 1) + j - 1] + comparison) : (d_sc_mat[blockShift + (i - 1) * (S_LEN + 1) + j] + del);
-            tmp2 = (d_sc_mat[blockShift + i * (S_LEN + 1) + j - 1] + ins) > 0 ? (d_sc_mat[blockShift + i * (S_LEN + 1) + j - 1] + ins) : 0;
-            int tmp = tmp1 > tmp2 ? tmp1 : tmp2;
-            char dir;
+            comparisonRes = d_sc_2_to_last_d[threadId] + comparison;
+            delRes = d_sc_last_d[threadId] + del;
+            insRes = d_sc_last_d[threadId + 1] + ins;
 
-            if (tmp == (d_sc_mat[blockShift + (i - 1) * (S_LEN + 1) + j - 1] + comparison))
+            tmp1 = comparisonRes > delRes ? comparisonRes : delRes;
+            tmp2 = insRes > 0 ? insRes : 0;
+            tmp = tmp1 > tmp2 ? tmp1 : tmp2;
+
+            if (tmp == comparisonRes)
                 dir = comparison == match ? 1 : 2;
-            else if (tmp == (d_sc_mat[blockShift + (i - 1) * (S_LEN + 1) + j] + del))
+            else if (tmp == delRes)
                 dir = 3;
-            else if (tmp == (d_sc_mat[blockShift + i * (S_LEN + 1) + j - 1] + ins))
+            else if (tmp == insRes)
                 dir = 4;
             else
                 dir = 0;
 
-            d_dir_mat[blockShift + i * (S_LEN + 1) + j] = dir;
-            d_sc_mat[blockShift + i * (S_LEN + 1) + j] = tmp;
+            d_dir_mat[i][j] = dir;
 
-            if (tmp > max)
+            if (max[threadId].val < tmp)
             {
-                max = tmp;
-                maxi = i;
-                maxj = j;
+                max[threadId].val = tmp;
+                max[threadId].i = maxi;
+                max[threadId].j = maxj;
             }
+        }
+        __syncthreads();
+        d_sc_2_to_last_d[threadId + 1] = d_sc_last_d[threadId + 1];
+        d_sc_last_d[threadId + 1] = tmp;
+        __syncthreads();
+    }
+
+    // parallel reduction to find max
+    for (int i = blockDim.x / 2; i > 0; i >>= 1)
+    {
+        if (threadId < i)
+        {
+            max[threadId] = max[threadId].val > max[threadId + i].val ? max[threadId] : max[threadId + i];
         }
         __syncthreads();
     }
 
-    d_res[index] = max;
-    // d_maxi_temp[index] = maxi;
-    // d_maxj_temp[index] = maxj;
+    // only the first thread for each block sets the results and perform the backtrace
+    if (threadId == 0)
+    {
+        d_res[blockIdx.x] = max[0].val;
+
+        /*maxi = max[0].i;
+        maxj = max[0].j;
+
+        for (int n = 0; n < S_LEN * 2 && d_dir_mat[maxi][maxj] != 0; n++)
+        {
+            int dir = d_dir_mat[maxi][maxj];
+            if (dir == 1 || dir == 2)
+            {
+                maxi--;
+                maxj--;
+            }
+            else if (dir == 3)
+                maxi--;
+            else if (dir == 4)
+                maxj--;
+
+            d_simple_rev_cigar[blockShift * 2 + n] = dir;
+        }*/
+    }
 }
 
 int main(int argc, char *argv[])
@@ -219,27 +257,28 @@ int main(int argc, char *argv[])
     char **query = (char **)malloc(N * sizeof(char *));
     for (int i = 0; i < N; i++)
         query[i] = (char *)malloc(S_LEN * sizeof(char));
-    char *query_copy = (char *)malloc(N * S_LEN * sizeof(char));
+    char *query_copy = (char *)malloc(N * S_LEN * sizeof(char)); // for the GPU
 
     char **reference = (char **)malloc(N * sizeof(char *));
     for (int i = 0; i < N; i++)
         reference[i] = (char *)malloc(S_LEN * sizeof(char));
-    char *reference_copy = (char *)malloc(N * S_LEN * sizeof(char));
+    char *reference_copy = (char *)malloc(N * S_LEN * sizeof(char)); // for the GPU
 
     int **sc_mat = (int **)malloc((S_LEN + 1) * sizeof(int *));
     for (int i = 0; i < (S_LEN + 1); i++)
         sc_mat[i] = (int *)malloc((S_LEN + 1) * sizeof(int));
+
     char **dir_mat = (char **)malloc((S_LEN + 1) * sizeof(char *));
     for (int i = 0; i < (S_LEN + 1); i++)
         dir_mat[i] = (char *)malloc((S_LEN + 1) * sizeof(char));
 
     int *res = (int *)malloc(N * sizeof(int));
-    int *res_gpu = (int *)malloc(N * S_LEN * sizeof(int));
+    int *res_gpu = (int *)malloc(N * sizeof(int)); // for the result of GPU
 
     char **simple_rev_cigar = (char **)malloc(N * sizeof(char *));
     for (int i = 0; i < N; i++)
         simple_rev_cigar[i] = (char *)malloc(S_LEN * 2 * sizeof(char));
-    char *simple_rev_cigar_gpu = (char *)malloc(N * S_LEN * 2 * sizeof(char));
+    char *simple_rev_cigar_gpu = (char *)malloc(N * S_LEN * 2 * sizeof(char)); // for the result of GPU
 
     // randomly generate sequences
     for (int i = 0; i < N; i++)
@@ -255,20 +294,12 @@ int main(int argc, char *argv[])
     }
 
     // device memory allocation
-    char *d_query, *d_reference, *d_dir_mat, *d_simple_rev_cigar;
-    int *d_res, *d_sc_mat;
-    // int *d_maxi_temp, *d_maxj_temp;
+    char *d_query, *d_reference, *d_simple_rev_cigar;
+    int *d_res;
 
     CHECK(cudaMalloc(&d_query, N * S_LEN * sizeof(char)));
     CHECK(cudaMalloc(&d_reference, N * S_LEN * sizeof(char)));
-
-    CHECK(cudaMalloc(&d_sc_mat, N * (S_LEN + 1) * (S_LEN + 1) * sizeof(int)));
-    CHECK(cudaMalloc(&d_dir_mat, N * (S_LEN + 1) * (S_LEN + 1) * sizeof(char)));
-
-    CHECK(cudaMalloc(&d_res, N * S_LEN * sizeof(int)));
-    // CHECK(cudaMalloc(&d_maxi_temp, N * S_LEN * sizeof(int)));
-    // CHECK(cudaMalloc(&d_maxj_temp, N * S_LEN * sizeof(int)));
-
+    CHECK(cudaMalloc(&d_res, N * sizeof(int)));
     CHECK(cudaMalloc(&d_simple_rev_cigar, N * S_LEN * 2 * sizeof(char)));
 
     // CPU->GPU data transmission
@@ -284,21 +315,17 @@ int main(int argc, char *argv[])
     double start_gpu = get_time();
     dim3 blocksPerGrid(N, 1, 1);
     dim3 threadsPerBlock(S_LEN, 1, 1);
-    sw_gpu<<<blocksPerGrid, threadsPerBlock>>>(d_query, d_reference, d_sc_mat, d_dir_mat, d_res);
-    CHECK_KERNELCALL();
-    CHECK(cudaDeviceSynchronize());
-    collect_res<<<blocksPerGrid, threadsPerBlock>>>(d_res);
+    sw_gpu<<<blocksPerGrid, threadsPerBlock>>>(d_query, d_reference, d_res, d_simple_rev_cigar);
     CHECK_KERNELCALL();
     CHECK(cudaDeviceSynchronize());
     double end_gpu = get_time();
 
-    CHECK(cudaMemcpy(res_gpu, d_res, sizeof(int) * N * S_LEN, cudaMemcpyDeviceToHost));
-    // CHECK(cudaMemcpy(simple_rev_cigar_gpu, d_simple_rev_cigar, sizeof(char) * N * S_LEN * 2, cudaMemcpyDeviceToHost));
+    CHECK(cudaMemcpy(res_gpu, d_res, sizeof(int) * N, cudaMemcpyDeviceToHost));
+    CHECK(cudaMemcpy(simple_rev_cigar_gpu, d_simple_rev_cigar, sizeof(char) * N * S_LEN * 2, cudaMemcpyDeviceToHost));
 
     for (int n = 0; n < N; n++)
     {
-        // printf("correct: %d, mine: %d\n", res[n], res_gpu[n]);
-        if (res[n] != res_gpu[n * S_LEN])
+        if (res[n] != res_gpu[n])
         {
             fprintf(stderr, "ERRORE, RISULTATO SBAGLIATO SU GPU\n");
             break;
@@ -318,11 +345,7 @@ int main(int argc, char *argv[])
 
     CHECK(cudaFree(d_query));
     CHECK(cudaFree(d_reference));
-    CHECK(cudaFree(d_sc_mat));
-    CHECK(cudaFree(d_dir_mat));
     CHECK(cudaFree(d_res));
-    // CHECK(cudaFree(d_maxi_temp));
-    // CHECK(cudaFree(d_maxj_temp));
     CHECK(cudaFree(d_simple_rev_cigar));
 
     free(query);
