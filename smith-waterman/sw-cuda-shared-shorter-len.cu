@@ -3,7 +3,7 @@
 #include <time.h>
 #include <sys/time.h>
 
-#define S_LEN 512
+#define S_LEN 64
 #define N 1000
 
 // penalties
@@ -130,7 +130,7 @@ void sw(int **sc_mat, char **dir_mat, char **query, char **reference, int *res, 
     }
 }
 
-__global__ void sw_gpu(char *d_query, char *d_reference, char *d_dir_mat, int *d_res, char *d_simple_rev_cigar)
+__global__ void sw_gpu(char *d_query, char *d_reference, int *d_res, char *d_simple_rev_cigar)
 {
     unsigned int threadId = threadIdx.x;
 
@@ -139,10 +139,9 @@ __global__ void sw_gpu(char *d_query, char *d_reference, char *d_dir_mat, int *d
     __shared__ int d_sc_2_to_last_d[S_LEN + 1];
     __shared__ max_ij max[S_LEN];
 
-    // __shared__ char d_dir_mat[(S_LEN + 1)*(S_LEN + 1)];
+    __shared__ char d_dir_mat[S_LEN + 1][S_LEN + 1];
 
     int blockShift = blockIdx.x * S_LEN;
-    int blockShift_dm = blockIdx.x * (S_LEN + 1) * (S_LEN + 1);
 
     // initialize the scoring mat and the direction matrix to 0
     d_sc_last_d[threadId] = 0;
@@ -150,10 +149,10 @@ __global__ void sw_gpu(char *d_query, char *d_reference, char *d_dir_mat, int *d
     max[threadId].val = ins;
     for (int j = 0; j < S_LEN + 1; j++)
     {
-        d_dir_mat[blockShift_dm + threadId * (S_LEN + 1) + j] = 0;
+        d_dir_mat[threadId][j] = 0;
         if (threadId == 0)
         {
-            d_dir_mat[blockShift_dm + S_LEN * (S_LEN + 1) + j] = 0;
+            d_dir_mat[S_LEN][j] = 0;
         }
     }
     if (threadId == 0)
@@ -196,7 +195,7 @@ __global__ void sw_gpu(char *d_query, char *d_reference, char *d_dir_mat, int *d
             else
                 dir = 0;
 
-            d_dir_mat[blockShift_dm + i * (S_LEN + 1) + j] = dir;
+            d_dir_mat[i][j] = dir;
 
             if (max[threadId].val < tmp)
             {
@@ -235,9 +234,9 @@ __global__ void sw_gpu(char *d_query, char *d_reference, char *d_dir_mat, int *d
         maxi = max[0].i;
         maxj = max[0].j;
 
-        for (int n = 0; n < S_LEN * 2 && d_dir_mat[blockShift_dm + maxi * (S_LEN + 1) + maxj] != 0; n++)
+        for (int n = 0; n < S_LEN * 2 && d_dir_mat[maxi][maxj] != 0; n++)
         {
-            int dir = d_dir_mat[blockShift_dm + maxi * (S_LEN + 1) + maxj];
+            int dir = d_dir_mat[maxi][maxj];
             if (dir == 1 || dir == 2)
             {
                 maxi--;
@@ -305,7 +304,6 @@ int main(int argc, char *argv[])
 
     CHECK(cudaMalloc(&d_query, N * S_LEN * sizeof(char)));
     CHECK(cudaMalloc(&d_reference, N * S_LEN * sizeof(char)));
-    CHECK(cudaMalloc(&d_dir_mat, N * (S_LEN + 1) * (S_LEN + 1) * sizeof(char)));
     CHECK(cudaMalloc(&d_res, N * sizeof(int)));
     CHECK(cudaMalloc(&d_simple_rev_cigar, N * S_LEN * 2 * sizeof(char)));
 
@@ -322,7 +320,7 @@ int main(int argc, char *argv[])
     double start_gpu = get_time();
     dim3 blocksPerGrid(N, 1, 1);
     dim3 threadsPerBlock(S_LEN, 1, 1);
-    sw_gpu<<<blocksPerGrid, threadsPerBlock>>>(d_query, d_reference, d_dir_mat, d_res, d_simple_rev_cigar);
+    sw_gpu<<<blocksPerGrid, threadsPerBlock>>>(d_query, d_reference, d_res, d_simple_rev_cigar);
     CHECK_KERNELCALL();
     CHECK(cudaDeviceSynchronize());
     double end_gpu = get_time();
@@ -352,7 +350,6 @@ int main(int argc, char *argv[])
 
     CHECK(cudaFree(d_query));
     CHECK(cudaFree(d_reference));
-    CHECK(cudaFree(d_dir_mat));
     CHECK(cudaFree(d_res));
     CHECK(cudaFree(d_simple_rev_cigar));
 
