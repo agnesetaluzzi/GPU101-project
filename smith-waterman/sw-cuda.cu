@@ -3,7 +3,7 @@
 #include <time.h>
 #include <sys/time.h>
 
-#define S_LEN 512
+#define S_LEN 64
 #define N 1000
 
 // penalties
@@ -139,7 +139,7 @@ __global__ void sw_gpu(char *d_query, char *d_reference, int *d_res, char *d_sim
     __shared__ int d_sc_2_to_last_d[S_LEN + 1];
     __shared__ max_ij max[S_LEN];
 
-    char d_dir_mat[S_LEN + 1][S_LEN + 1];
+    __shared__ char d_dir_mat[S_LEN + 1][S_LEN + 1];
 
     int blockShift = blockIdx.x * S_LEN;
 
@@ -216,7 +216,7 @@ __global__ void sw_gpu(char *d_query, char *d_reference, int *d_res, char *d_sim
         if (threadId < i)
         {
             // I choose the same maximum found in the s-w implementation on the host (the first scanning the matrix row by row)
-            if (max[threadId + i].val > max[threadId].||
+            if (max[threadId + i].val > max[threadId].val ||
                 max[threadId + i].val == max[threadId].val && (max[threadId + i].i < max[threadId].i ||
                                                                (max[threadId + i].i == max[threadId].i && max[threadId + i].j < max[threadId].j)))
             {
