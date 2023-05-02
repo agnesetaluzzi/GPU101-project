@@ -159,7 +159,6 @@ __global__ void sw_gpu(char *d_query, char *d_reference, int *d_res, char *d_sim
     {
         d_sc_last_d[S_LEN] = 0;
         d_sc_2_to_last_d[S_LEN] = 0;
-        // max = ins;
     }
     __syncthreads();
 
@@ -201,8 +200,8 @@ __global__ void sw_gpu(char *d_query, char *d_reference, int *d_res, char *d_sim
             if (max[threadId].val < tmp)
             {
                 max[threadId].val = tmp;
-                max[threadId].i = maxi;
-                max[threadId].j = maxj;
+                max[threadId].i = i;
+                max[threadId].j = j;
             }
         }
         __syncthreads();
@@ -216,17 +215,23 @@ __global__ void sw_gpu(char *d_query, char *d_reference, int *d_res, char *d_sim
     {
         if (threadId < i)
         {
-            max[threadId] = max[threadId].val > max[threadId + i].val ? max[threadId] : max[threadId + i];
+            // I choose the same maximum found in the s-w implementation on the host (the first scanning the matrix row by row)
+            if (max[threadId + i].val > max[threadId].||
+                max[threadId + i].val == max[threadId].val && (max[threadId + i].i < max[threadId].i ||
+                                                               (max[threadId + i].i == max[threadId].i && max[threadId + i].j < max[threadId].j)))
+            {
+                max[threadId] = max[threadId + i];
+            }
         }
         __syncthreads();
     }
 
-    // only the first thread for each block sets the results and perform the backtrace
+    // only the first thread for each block performs the backtrace and sets the results
     if (threadId == 0)
     {
         d_res[blockIdx.x] = max[0].val;
 
-        /*maxi = max[0].i;
+        maxi = max[0].i;
         maxj = max[0].j;
 
         for (int n = 0; n < S_LEN * 2 && d_dir_mat[maxi][maxj] != 0; n++)
@@ -243,7 +248,7 @@ __global__ void sw_gpu(char *d_query, char *d_reference, int *d_res, char *d_sim
                 maxj--;
 
             d_simple_rev_cigar[blockShift * 2 + n] = dir;
-        }*/
+        }
     }
 }
 
@@ -330,14 +335,14 @@ int main(int argc, char *argv[])
             fprintf(stderr, "ERRORE, RISULTATO SBAGLIATO SU GPU\n");
             break;
         }
-        /*for (int s = 0; s < S_LEN * 2; s++)
+        for (int s = 0; s < S_LEN * 2; s++)
         {
             if (simple_rev_cigar[n][s] != simple_rev_cigar_gpu[n * S_LEN * 2 + s])
             {
                 fprintf(stderr, "ERRORE, RISULTATO SBAGLIATO SU GPU (BACKTRACE)\n");
                 break;
             }
-        }*/
+        }
     }
 
     printf("SW Time CPU: %.10lf\n", end_cpu - start_cpu);
