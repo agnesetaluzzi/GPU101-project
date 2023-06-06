@@ -3,7 +3,7 @@
 #include <time.h>
 #include <sys/time.h>
 
-#define S_LEN 256
+#define S_LEN 512
 #define N 1000
 
 // penalties
@@ -35,6 +35,13 @@
             exit(EXIT_FAILURE);                                      \
         }                                                            \
     }
+
+typedef struct
+{
+    int val;
+    int i;
+    int j;
+} max_ij;
 
 double get_time() // function to get the time of day in seconds
 {
@@ -123,70 +130,11 @@ void sw(int **sc_mat, char **dir_mat, char **query, char **reference, int *res, 
     }
 }
 
-__global__ void sw_gpu(char *d_query, char *d_reference, int *d_res, char *d_simple_rev_cigar)
+__device__ void backtrace_gpu(char *d_dir_mat, char *d_simple_rev_cigar, int maxi, int maxj, const int blockShift, const int blockShift_dm)
 {
-    int d_sc_mat[S_LEN + 1][S_LEN + 1];
-    char d_dir_mat[S_LEN + 1][S_LEN + 1];
-
-    // __shared__ int d_sc_mat[S_LEN + 1][S_LEN + 1];
-    // __shared__ char d_dir_mat[S_LEN + 1][S_LEN + 1];
-
-    int blockShift = blockIdx.x * S_LEN;
-
-    int max = ins; // in sw all scores of the alignment are >= 0, so this will be for sure changed
-    int maxi, maxj;
-
-    // initialize the scoring matrix and direction matrix to 0
-    for (int i = 0; i < S_LEN + 1; i++)
+    for (int n = 0; n < S_LEN * 2 && d_dir_mat[blockShift_dm + maxi * (S_LEN + 1) + maxj] != 0; n++)
     {
-        for (int j = 0; j < S_LEN + 1; j++)
-        {
-            d_sc_mat[i][j] = 0;
-            d_dir_mat[i][j] = 0;
-        }
-    }
-
-    for (int i = 1; i < S_LEN + 1; i++)
-    {
-        for (int j = 1; j < S_LEN + 1; j++)
-        {
-            // compare the sequences characters
-            int comparison = (d_query[blockShift + i - 1] == d_reference[blockShift + j - 1]) ? match : mismatch;
-
-            // compute the cell knowing the comparison result
-            int tmp1, tmp2;
-            tmp1 = (d_sc_mat[i - 1][j - 1] + comparison) > (d_sc_mat[i - 1][j] + del) ? (d_sc_mat[i - 1][j - 1] + comparison) : (d_sc_mat[i - 1][j] + del);
-            tmp2 = (d_sc_mat[i][j - 1] + ins) > 0 ? (d_sc_mat[i][j - 1] + ins) : 0;
-            int tmp = tmp1 > tmp2 ? tmp1 : tmp2;
-            char dir;
-
-            if (tmp == (d_sc_mat[i - 1][j - 1] + comparison))
-                dir = comparison == match ? 1 : 2;
-            else if (tmp == (d_sc_mat[i - 1][j] + del))
-                dir = 3;
-            else if (tmp == (d_sc_mat[i][j - 1] + ins))
-                dir = 4;
-            else
-                dir = 0;
-
-            d_dir_mat[i][j] = dir;
-            d_sc_mat[i][j] = tmp;
-
-            if (tmp > max)
-            {
-                max = tmp;
-                maxi = i;
-                maxj = j;
-            }
-        }
-    }
-
-    d_res[blockIdx.x] = d_sc_mat[maxi][maxj];
-
-    // backtrace
-    for (int n = 0; n < S_LEN * 2 && d_dir_mat[maxi][maxj] != 0; n++)
-    {
-        int dir = d_dir_mat[maxi][maxj];
+        int dir = d_dir_mat[blockShift_dm + maxi * (S_LEN + 1) + maxj];
         if (dir == 1 || dir == 2)
         {
             maxi--;
@@ -198,6 +146,114 @@ __global__ void sw_gpu(char *d_query, char *d_reference, int *d_res, char *d_sim
             maxj--;
 
         d_simple_rev_cigar[blockShift * 2 + n] = dir;
+    }
+}
+
+__global__ void sw_gpu(char *d_query, char *d_reference, char *d_dir_mat, int *d_res, char *d_simple_rev_cigar)
+{
+    unsigned int threadId = threadIdx.x;
+
+    // I keep in shared memory only the last 2 computed scoring matrix diagonals + array of max structs for parallel reduction
+    __shared__ int d_sc_last_d[S_LEN + 1];
+    __shared__ int d_sc_2_to_last_d[S_LEN + 1];
+    __shared__ max_ij max[S_LEN];
+
+    int blockShift = blockIdx.x * S_LEN;
+    int blockShift_dm = blockIdx.x * (S_LEN + 1) * (S_LEN + 1);
+
+    // initialize the last 2 computed scoring matrix diagonals to 0 and the value field in the array of max structs to -2
+    d_sc_last_d[threadId] = 0;
+    d_sc_2_to_last_d[threadId] = 0;
+    max[threadId].val = ins;
+    if (threadId == 0)
+    {
+        d_sc_last_d[S_LEN] = 0;
+        d_sc_2_to_last_d[S_LEN] = 0;
+    }
+    __syncthreads();
+
+    // thread local variables
+    int i, j, maxi, maxj, comparison, tmp1, tmp2, comparisonRes, delRes, insRes, tmp = 0;
+    char dir;
+
+    // loop for each diagonal of the scoring matrix
+    for (int d = 0; d < S_LEN * 2 - 1; d++)
+    {
+        i = threadId + 1; // row index
+        j = d - threadId + 1; // column index
+
+        // set first row and first column of direction matrix to 0
+        if (i == 0 || j == 0)
+            d_dir_mat[blockShift_dm + i * (S_LEN + 1) + j] = 0;
+
+        // check if indexes are valid
+        if (!(i < 1 || i > S_LEN || j < 1 || j > S_LEN))
+        {
+
+            // compare the sequences characters
+            comparison = (d_query[blockShift + i - 1] == d_reference[blockShift + j - 1]) ? match : mismatch;
+
+            // compute the cell knowing the comparison result
+            comparisonRes = d_sc_2_to_last_d[threadId] + comparison;
+            delRes = d_sc_last_d[threadId] + del;
+            insRes = d_sc_last_d[threadId + 1] + ins;
+
+            tmp1 = comparisonRes > delRes ? comparisonRes : delRes;
+            tmp2 = insRes > 0 ? insRes : 0;
+            tmp = tmp1 > tmp2 ? tmp1 : tmp2;
+
+            if (tmp == comparisonRes)
+                dir = comparison == match ? 1 : 2;
+            else if (tmp == delRes)
+                dir = 3;
+            else if (tmp == insRes)
+                dir = 4;
+            else
+                dir = 0;
+
+            // update direction matrix element (i, j)
+            d_dir_mat[blockShift_dm + i * (S_LEN + 1) + j] = dir;
+
+            // update local max of the thread
+            if (max[threadId].val < tmp)
+            {
+                max[threadId].val = tmp;
+                max[threadId].i = i;
+                max[threadId].j = j;
+            }
+        }
+        __syncthreads();
+
+        // update last 2 computed diagonals
+        d_sc_2_to_last_d[threadId + 1] = d_sc_last_d[threadId + 1];
+        d_sc_last_d[threadId + 1] = tmp;
+        __syncthreads();
+    }
+
+    // parallel reduction to find max
+    for (int i = blockDim.x / 2; i > 0; i >>= 1)
+    {
+        if (threadId < i)
+        {
+            // I choose the same maximum found in the s-w implementation on the host (the first scanning the matrix row by row)
+            if (max[threadId + i].val > max[threadId].val ||
+                max[threadId + i].val == max[threadId].val && (max[threadId + i].i < max[threadId].i ||
+                                                               (max[threadId + i].i == max[threadId].i && max[threadId + i].j < max[threadId].j)))
+            {
+                max[threadId] = max[threadId + i];
+            }
+        }
+        __syncthreads();
+    }
+
+    // only the first thread for each block performs the backtrace and sets the results
+    if (threadId == 0)
+    {
+        d_res[blockIdx.x] = max[0].val;
+
+        maxi = max[0].i;
+        maxj = max[0].j;
+        backtrace_gpu(d_dir_mat, d_simple_rev_cigar, maxi, maxj, blockShift, blockShift_dm);
     }
 }
 
@@ -248,11 +304,12 @@ int main(int argc, char *argv[])
     }
 
     // device memory allocation
-    char *d_query, *d_reference, *d_simple_rev_cigar;
+    char *d_query, *d_reference, *d_dir_mat, *d_simple_rev_cigar;
     int *d_res;
 
     CHECK(cudaMalloc(&d_query, N * S_LEN * sizeof(char)));
     CHECK(cudaMalloc(&d_reference, N * S_LEN * sizeof(char)));
+    CHECK(cudaMalloc(&d_dir_mat, N * (S_LEN + 1) * (S_LEN + 1) * sizeof(char)));
     CHECK(cudaMalloc(&d_res, N * sizeof(int)));
     CHECK(cudaMalloc(&d_simple_rev_cigar, N * S_LEN * 2 * sizeof(char)));
 
@@ -268,8 +325,8 @@ int main(int argc, char *argv[])
     // GPU execution
     double start_gpu = get_time();
     dim3 blocksPerGrid(N, 1, 1);
-    dim3 threadsPerBlock(1, 1, 1);
-    sw_gpu<<<blocksPerGrid, threadsPerBlock>>>(d_query, d_reference, d_res, d_simple_rev_cigar);
+    dim3 threadsPerBlock(S_LEN, 1, 1);
+    sw_gpu<<<blocksPerGrid, threadsPerBlock>>>(d_query, d_reference, d_dir_mat, d_res, d_simple_rev_cigar);
     CHECK_KERNELCALL();
     CHECK(cudaDeviceSynchronize());
     double end_gpu = get_time();
@@ -299,6 +356,7 @@ int main(int argc, char *argv[])
 
     CHECK(cudaFree(d_query));
     CHECK(cudaFree(d_reference));
+    CHECK(cudaFree(d_dir_mat));
     CHECK(cudaFree(d_res));
     CHECK(cudaFree(d_simple_rev_cigar));
 

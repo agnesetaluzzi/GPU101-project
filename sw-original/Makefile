@@ -1,10 +1,10 @@
 CC 			=	gcc
 CFLAGS		=	-O3 -Wunused-result
-PROG		=	smith-waterman/sw-test
+PROG		=	sw
 
 all:$(PROG)
 
-smith-waterman/sw-test: smith-waterman/sw.c
+sw: sw.c
 	$(CC) $(CFLAGS) $^ -o $@ 
 
 .PHONY:clean

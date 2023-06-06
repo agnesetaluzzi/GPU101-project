@@ -1,0 +1,14 @@
+https://docs.nvidia.com/cuda/cuda-c-programming-guide/
+cuda version: 9.0 or later
+compute capabilities: 3.7
+
+with colab:
+Major revision number: 7
+Minor revision number: 5
+Name: Tesla T4
+Total global memory: 15835398144
+Total registers per block: 65536
+Maximum threads per block: 1024
+Maximum dimension 0 of block: 1024
+Maximum dimension 1 of block: 1024
+Maximum dimension 2 of block: 64
