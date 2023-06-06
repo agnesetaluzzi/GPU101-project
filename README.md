@@ -2,39 +2,39 @@
 
 ### Scope of the project
 
-The purpose of the project is to provide a GPU accelerated implementation of a given application.
+The objective of this project is to develop a GPU-accelerated implementation of the Smith-Waterman algorithm, an optimal method for locally aligning pairs of sequences.
+The implementation focuses on processing 1000 sequence pairs, where the sequences have a length of 512, and conducting the necessary backtracing operations.
 
-In this case, the application contains the implementations of the Smith-Waterman algorithm, an optimal algorithm for the local alignment of a pair of sequences.  
-It consists of computing an alignment matrix H with the following constraints (weights are set before the computation):
-
-<p align="center">
-  <img src="https://user-images.githubusercontent.com/100696829/235691393-dc5e1ecf-594c-4642-bf0f-a68250cc3768.png" height="150"/>
-</p>
-
-And tracing back the result of the alignment.
-
-<p align="center">
-  <img src="https://user-images.githubusercontent.com/100696829/235692632-be9149ab-dedc-4183-b36d-88ac140f6896.png" height="300"/>
-</p>
+The [report](/docs/report.pdf) contains additional information about the Smith-Waterman algorithm, a comprehensive explanation of my implementation, as well as performance and profiling data.
 
 ### Content of the repo
 
 The repository contains:
-- a naive implementation with a single thread per block: **sw-cuda-single-thread.cu**
-- an alternative implementation with shared memory that works only for strings with a shorter length wrt the given one (<= 128): **sw-cuda-shared-shorter-len.cu**
-- the final implementation: **sw-cuda.cu**
+- in the **sw-original** folder, the original implementation in c: **sw.c**
+- in the **sw-accelerated** folder, the final implementation in CUDA: **sw-cuda.cu**
+
+Each folder also contain a specific Makefile.
 
 ### Usage
 
-You only need GCC to compile the C program, while you must have CUDA installed on your machine to compile and run the CUDA files.  
-If you don’t have access to a GPU, you can use Google Colaboratory (see this guide: https://github.com/albertozeni/gpu_course_colab).
+To compile the C program, you only need GCC (GNU Compiler Collection) installed on your machine.
+To compile and run CUDA files, you need to have CUDA installed.
+Alternatively, if you don’t have access to a GPU, you can use Google Colaboratory.
 
 To compile the C program simply type
 ```
 make
 ```
-Within the scope of this folder.
+Within the scope of the **sw-original** folder.
+
 To compile the CUDA programs type
 ```
-nvcc -O3 <name-of-file>
+make
+```
+Within the scope of the **sw-accelerated** folder.
+
+If you are using colab upload the **sw-cuda.cu** file and run the following code block to compile and run the program
+```
+!nvcc -O3 sw-cuda.cu -o sw-cuda
+!./sw-cuda
 ```
